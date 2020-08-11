@@ -206,50 +206,48 @@ func dumpCounters() error {
 }
 
 func loadCounters() error {
-
-	var filename string
 	var err error
-	var body []byte
-	var previousValue int
 
-	filename = filepath.Join(".data", "PostsCounter.txt")
-	body, err = ioutil.ReadFile(filename)
+	var groupsCount int
+	var postsCount int
+	var commentsCount int
+
+	groupsDirList, err := ioutil.ReadDir(filepath.Join(".data", "comments"))
 	if err != nil {
-		previousValue = 0
-		err = nil
-	} else {
-		previousValue, err = strconv.Atoi(string(body))
-		if err != nil {
-			return err
+		return err
+	}
+	// for group in groups
+	for _, groupFileInfo := range groupsDirList {
+		if groupFileInfo.IsDir() {
+			groupsCount++
+			postsDirList, err := ioutil.ReadDir(filepath.Join(".data", "comments", groupFileInfo.Name()))
+			if err != nil {
+				return err
+			}
+			// for post in group.posts
+			for _, postFileInfo := range postsDirList {
+				if postFileInfo.IsDir() {
+					postsCount++
+					commentsDirList, err := ioutil.ReadDir(filepath.Join(".data", "comments", groupFileInfo.Name(), postFileInfo.Name()))
+					if err != nil {
+						return err
+					}
+					// for comment in post.comments
+					commentsCount += len(commentsDirList) - 1
+				}
+			}
 		}
 	}
-	PostsCounter += uint64(previousValue)
 
-	filename = filepath.Join(".data", "ProfilesCounter.txt")
-	body, err = ioutil.ReadFile(filename)
+	profilesDirList, err := ioutil.ReadDir(filepath.Join(".data", "profiles"))
 	if err != nil {
-		previousValue = 0
-		err = nil
-	} else {
-		previousValue, err = strconv.Atoi(string(body))
-		if err != nil {
-			return err
-		}
+		return err
 	}
-	ProfilesCounter += uint64(previousValue)
+	profilesCount := len(profilesDirList)
 
-	filename = filepath.Join(".data", "CommentsCounter.txt")
-	body, err = ioutil.ReadFile(filename)
-	if err != nil {
-		previousValue = 0
-		err = nil
-	} else {
-		previousValue, err = strconv.Atoi(string(body))
-		if err != nil {
-			return err
-		}
-	}
-	CommentsCounter += uint64(previousValue)
+	PostsCounter += uint64(postsCount)
+	CommentsCounter += uint64(commentsCount)
+	ProfilesCounter += uint64(profilesCount)
 
 	return err
 }
@@ -379,9 +377,17 @@ func logStats() error {
 
 func main() {
 
+	if VK_API_ACCESS_TOKEN_USER == "" {
+		body, err := ioutil.ReadFile("access_token.txt")
+		if err != nil {
+			log.Fatalln("No AccessToken found in the environment.\nVisit https://oauth.vk.com/authorize?client_id=6359340&redirect_uri=https://oauth.vk.com/blank.html&response_type=token to get a token and put it into a file 'access_token.txt' or into a VK_API_ACCESS_TOKEN_USER environmental variable.\nExiting..")
+		}
+		VK_API_ACCESS_TOKEN_USER = string(body)
+	}
+
 	body, err := ioutil.ReadFile("groups.txt")
 	if err != nil {
-		panic(err)
+		log.Fatalln("Groups.txt file not found. Exiting..")
 	}
 
 	logStats()
