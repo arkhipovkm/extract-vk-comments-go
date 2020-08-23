@@ -304,13 +304,13 @@ func parseGroup(groupID string, screenName string) error {
 		if vkResponse.Error != nil {
 			log.Println(vkResponse.Error.ErrorMsg)
 			log.Println("Sleeping for 60 seconds to recover..")
-			time.Sleep(60)
+			time.Sleep(60 * time.Second)
 			continue
 		}
 		if err != nil {
 			log.Println(err)
 			log.Println("Sleeping for 60 seconds to recover..")
-			time.Sleep(60)
+			time.Sleep(60 * time.Second)
 			continue
 		}
 		for _, post := range vkResponse.Response.Posts.Items {
@@ -370,6 +370,10 @@ func parseGroup(groupID string, screenName string) error {
 			}
 		}
 		offset += len(vkResponse.Response.Posts.Items)
+		if offset >= vkResponse.Response.Posts.Count {
+			log.Printf("Finish. Parsed %d/%d posts", offset, vkResponse.Response.Posts.Count)
+			break
+		}
 		filename = filepath.Join(os.Getenv("HOME"), "data", "comments", groupID, "offset.txt")
 		err = ioutil.WriteFile(filename, []byte(strconv.Itoa(offset)), os.ModePerm)
 		if err != nil {
@@ -382,10 +386,6 @@ func parseGroup(groupID string, screenName string) error {
 		}
 		log.Printf("Group %s. Next offset: %d\n", groupID, offset)
 		log.Printf("Total Posts: %d. Total Profiles %d. TotalComments %d", PostsCounter, ProfilesCounter, CommentsCounter)
-		if offset >= vkResponse.Response.Posts.Count {
-			log.Printf("Finish. Parsed %d/%d posts", offset, vkResponse.Response.Posts.Count)
-			break
-		}
 	}
 	wg.Done()
 	return err
