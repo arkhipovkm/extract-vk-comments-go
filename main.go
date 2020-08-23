@@ -20,8 +20,8 @@ import (
 var VK_API_ACCESS_TOKEN_USER string = os.Getenv("VK_API_ACCESS_TOKEN_USER")
 
 type VkError struct {
-	Error_code int
-	Error_msg  string
+	ErrorCode int    `json:"error_code"`
+	ErrorMsg  string `json:"error_msg"`
 }
 
 type VkLikes struct {
@@ -51,24 +51,28 @@ type VkCountry struct {
 }
 
 type VkProfile struct {
-	ID         int
-	First_name string
-	Last_name  string
-	Sex        int
-	Bdate      string
-	City       VkCity
-	Country    VkCountry
+	ID        int
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Sex       int
+	Bdate     string
+	Byear     int
+	City      VkCity
+	Country   VkCountry
 }
 
 type VkCommentItem struct {
-	ID               int
-	From_id          int
-	Date             int
-	Text             string
-	Likes            VkLikes
-	Reply_to_user    int
-	Reply_to_comment int
-	Profile          *VkProfile
+	ID             int
+	FromID         int `json:"from_id"`
+	PostID         string
+	GroupID        string
+	PostURL        string
+	Date           int
+	Text           string
+	Likes          VkLikes
+	ReplyToUser    int `json:"reply_to_user"`
+	ReplyToComment int `json:"reply_to_comment"`
+	Profile        *VkProfile
 }
 
 type VkCommentsResp struct {
@@ -84,16 +88,16 @@ type VkItem struct {
 }
 
 type VkPostItem struct {
-	ID        int
-	From_id   int
-	Owner_id  int
-	Date      int
-	Post_type string
-	Text      string
-	Likes     VkLikes
-	Comments  VkComments
-	Reposts   VkReposts
-	Views     VkViews
+	ID       int
+	FromID   int `json:"from_id"`
+	OwnerID  int `json:"owner_id"`
+	Date     int
+	PostType string `json:"post_type"`
+	Text     string
+	Likes    VkLikes
+	Comments VkComments
+	Reposts  VkReposts
+	Views    VkViews
 }
 
 type VkPostsResp struct {
@@ -113,6 +117,7 @@ type VkResponse struct {
 
 var mutex *sync.Mutex = &sync.Mutex{}
 var limiter <-chan time.Time = time.Tick(333 * time.Millisecond)
+var wg sync.WaitGroup = sync.WaitGroup{}
 
 var PostsCounter uint64
 var ProfilesCounter uint64
@@ -273,10 +278,16 @@ func parseGroup(groupID string) error {
 		}
 		vkResponse, err := doVKAPIRequest("execute.getComments", query)
 		if vkResponse.Error != nil {
-			log.Fatalln(vkResponse.Error.Error_msg)
+			log.Println(vkResponse.Error.ErrorMsg)
+			log.Println("Sleeping for 60 seconds to recover..")
+			time.Sleep(60)
+			continue
 		}
 		if err != nil {
-			panic(err)
+			log.Println(err)
+			log.Println("Sleeping for 60 seconds to recover..")
+			time.Sleep(60)
+			continue
 		}
 		for _, post := range vkResponse.Response.Posts.Items {
 			if post.Comments.Count > 0 {
@@ -292,6 +303,12 @@ func parseGroup(groupID string) error {
 		profilesMap := make(map[int]*VkProfile)
 		for _, item := range vkResponse.Response.Items {
 			for _, profile := range item.Comments.Profiles {
+				bparts := strings.Split(profile.Bdate, ".")
+				var byear int
+				if len(bparts) > 2 {
+					byear, _ = strconv.Atoi(bparts[2])
+				}
+				profile.Byear = byear
 				profilesMap[profile.ID] = &profile
 			}
 		}
@@ -299,12 +316,22 @@ func parseGroup(groupID string) error {
 		for _, item := range vkResponse.Response.Items {
 			for _, comment := range item.Comments.Items {
 				if comment.Text != "" {
-					comment.Profile = profilesMap[comment.From_id]
+					comment.Profile = profilesMap[comment.FromID]
+					comment.PostID = item.PostID
+					comment.GroupID = item.GroupID
+					absGroupID := strings.Split(item.GroupID, "-")
+					comment.PostURL = "https://vk.com/public" + absGroupID[1] + "?w=wall" + item.GroupID + "_" + item.PostID
 					filename := filepath.Join(".data", "comments", item.GroupID, item.PostID, strconv.Itoa(comment.ID)+".json")
 					err = dump(filename, comment)
 					if err != nil {
 						panic(err)
 					}
+					// id := comment.GroupID + "_" + comment.PostID + "_" + strconv.Itoa(comment.ID)
+					// elastic.Fs2DBQueue <- elastic.Fs2DBArgs{
+					// 	ID:       id,
+					// 	Filename: filename,
+					// 	Index:    "comments-1",
+					// }
 					atomic.AddUint64(&CommentsCounter, 1)
 				}
 			}
@@ -330,7 +357,13 @@ func parseGroup(groupID string) error {
 		}
 		log.Printf("Group %s. Next offset: %d\n", groupID, offset)
 		log.Printf("Total Posts: %d. Total Profiles %d. TotalComments %d", PostsCounter, ProfilesCounter, CommentsCounter)
+		if offset >= vkResponse.Response.Posts.Count {
+			log.Printf("Finish. Parsed %d/%d posts", offset, vkResponse.Response.Posts.Count)
+			break
+		}
 	}
+	wg.Done()
+	return err
 }
 
 func handleInterrupt() {
@@ -393,10 +426,10 @@ func main() {
 	logStats()
 	go handleInterrupt()
 
-	wg := &sync.WaitGroup{}
 	for _, groupID := range strings.Split(string(body), "\n") {
 		wg.Add(1)
 		go parseGroup(groupID)
 	}
+	// go elastic.ElasticLoop()
 	wg.Wait()
 }
