@@ -111,6 +111,11 @@ type VkResponse struct {
 	Error    *VkError
 }
 
+type VkGenericResponse struct {
+	Response interface{}
+	Error    *VkError
+}
+
 var mutex *sync.Mutex = &sync.Mutex{}
 var limiter <-chan time.Time = time.Tick(333 * time.Millisecond)
 
@@ -144,12 +149,30 @@ func doGETRequest(uri string, query url.Values) ([]byte, error) {
 	return body, err
 }
 
-func doVKAPIRequest(methodName string, query url.Values) (VkResponse, error) {
+func doVKAPISpecificRequest(methodName string, query url.Values) (VkResponse, error) {
 	var vkResponse VkResponse
 	var err error
 
 	query.Add("access_token", VK_API_ACCESS_TOKEN_USER)
-	query.Add("v", "5.71")
+	query.Add("v", "5.122")
+
+	body, err := doGETRequest("https://api.vk.com/method/"+methodName, query)
+	if err != nil {
+		return vkResponse, err
+	}
+	err = json.Unmarshal(body, &vkResponse)
+	if err != nil {
+		return vkResponse, err
+	}
+	return vkResponse, err
+}
+
+func doVKAPIGenericRequest(methodName string, query url.Values) (VkGenericResponse, error) {
+	var vkResponse VkGenericResponse
+	var err error
+
+	query.Add("access_token", VK_API_ACCESS_TOKEN_USER)
+	query.Add("v", "5.122")
 
 	body, err := doGETRequest("https://api.vk.com/method/"+methodName, query)
 	if err != nil {
@@ -187,17 +210,17 @@ func dumpCounters() error {
 	var filename string
 	var err error
 
-	filename = filepath.Join(".data", "PostsCounter.txt")
+	filename = filepath.Join(os.Getenv("HOME"), "data", "PostsCounter.txt")
 	err = ioutil.WriteFile(filename, []byte(strconv.Itoa(int(PostsCounter))), os.ModePerm)
 	if err != nil {
 		return err
 	}
-	filename = filepath.Join(".data", "ProfilesCounter.txt")
+	filename = filepath.Join(os.Getenv("HOME"), "data", "ProfilesCounter.txt")
 	err = ioutil.WriteFile(filename, []byte(strconv.Itoa(int(ProfilesCounter))), os.ModePerm)
 	if err != nil {
 		return err
 	}
-	filename = filepath.Join(".data", "CommentsCounter.txt")
+	filename = filepath.Join(os.Getenv("HOME"), "data", "CommentsCounter.txt")
 	err = ioutil.WriteFile(filename, []byte(strconv.Itoa(int(CommentsCounter))), os.ModePerm)
 	if err != nil {
 		return err
@@ -212,7 +235,7 @@ func loadCounters() error {
 	var postsCount int
 	var commentsCount int
 
-	groupsDirList, err := ioutil.ReadDir(filepath.Join(".data", "comments"))
+	groupsDirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "comments"))
 	if err != nil {
 		return err
 	}
@@ -220,7 +243,7 @@ func loadCounters() error {
 	for _, groupFileInfo := range groupsDirList {
 		if groupFileInfo.IsDir() {
 			groupsCount++
-			postsDirList, err := ioutil.ReadDir(filepath.Join(".data", "comments", groupFileInfo.Name()))
+			postsDirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "comments", groupFileInfo.Name()))
 			if err != nil {
 				return err
 			}
@@ -228,7 +251,7 @@ func loadCounters() error {
 			for _, postFileInfo := range postsDirList {
 				if postFileInfo.IsDir() {
 					postsCount++
-					commentsDirList, err := ioutil.ReadDir(filepath.Join(".data", "comments", groupFileInfo.Name(), postFileInfo.Name()))
+					commentsDirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "comments", groupFileInfo.Name(), postFileInfo.Name()))
 					if err != nil {
 						return err
 					}
@@ -239,7 +262,7 @@ func loadCounters() error {
 		}
 	}
 
-	profilesDirList, err := ioutil.ReadDir(filepath.Join(".data", "profiles"))
+	profilesDirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "profiles"))
 	if err != nil {
 		return err
 	}
@@ -256,7 +279,7 @@ func parseGroup(groupID string) error {
 	var err error
 	var filename string
 	var offset int
-	filename = filepath.Join(".data", "comments", groupID, "offset.txt")
+	filename = filepath.Join(os.Getenv("HOME"), "data", "comments", groupID, "offset.txt")
 	body, err := ioutil.ReadFile(filename)
 	if err == nil {
 		offset, err = strconv.Atoi(string(body))
@@ -271,7 +294,7 @@ func parseGroup(groupID string) error {
 			"offset": {strconv.Itoa(offset)},
 			"req":    {"20"},
 		}
-		vkResponse, err := doVKAPIRequest("execute.getComments", query)
+		vkResponse, err := doVKAPISpecificRequest("execute.getComments", query)
 		if vkResponse.Error != nil {
 			log.Fatalln(vkResponse.Error.Error_msg)
 		}
@@ -280,7 +303,7 @@ func parseGroup(groupID string) error {
 		}
 		for _, post := range vkResponse.Response.Posts.Items {
 			if post.Comments.Count > 0 {
-				filename := filepath.Join(".data", "comments", groupID, strconv.Itoa(post.ID), "post.json")
+				filename := filepath.Join(os.Getenv("HOME"), "data", "comments", groupID, strconv.Itoa(post.ID), "post.json")
 				err = dump(filename, post)
 				if err != nil {
 					panic(err)
@@ -300,7 +323,7 @@ func parseGroup(groupID string) error {
 			for _, comment := range item.Comments.Items {
 				if comment.Text != "" {
 					comment.Profile = profilesMap[comment.From_id]
-					filename := filepath.Join(".data", "comments", item.GroupID, item.PostID, strconv.Itoa(comment.ID)+".json")
+					filename := filepath.Join(os.Getenv("HOME"), "data", "comments", item.GroupID, item.PostID, strconv.Itoa(comment.ID)+".json")
 					err = dump(filename, comment)
 					if err != nil {
 						panic(err)
@@ -309,7 +332,7 @@ func parseGroup(groupID string) error {
 				}
 			}
 			for _, profile := range item.Comments.Profiles {
-				filename := filepath.Join(".data", "profiles", strconv.Itoa(profile.ID)+".json")
+				filename := filepath.Join(os.Getenv("HOME"), "data", "profiles", strconv.Itoa(profile.ID)+".json")
 				err = dump(filename, profile)
 				if err != nil {
 					panic(err)
@@ -318,12 +341,12 @@ func parseGroup(groupID string) error {
 			}
 		}
 		offset += len(vkResponse.Response.Posts.Items)
-		filename = filepath.Join(".data", "comments", groupID, "offset.txt")
+		filename = filepath.Join(os.Getenv("HOME"), "data", "comments", groupID, "offset.txt")
 		err = ioutil.WriteFile(filename, []byte(strconv.Itoa(offset)), os.ModePerm)
 		if err != nil {
 			panic(err)
 		}
-		filename = filepath.Join(".data", "comments", groupID, "count.txt")
+		filename = filepath.Join(os.Getenv("HOME"), "data", "comments", groupID, "count.txt")
 		err = ioutil.WriteFile(filename, []byte(strconv.Itoa(vkResponse.Response.Posts.Count)), os.ModePerm)
 		if err != nil {
 			panic(err)
@@ -346,20 +369,20 @@ func handleInterrupt() {
 
 func logStats() error {
 	var err error
-	dirList, err := ioutil.ReadDir(filepath.Join(".data", "comments"))
+	dirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "comments"))
 	if err != nil {
 		return err
 	}
 	for _, fileInfo := range dirList {
 		if fileInfo.IsDir() {
-			body, err := ioutil.ReadFile(filepath.Join(".data", "comments", fileInfo.Name(), "offset.txt"))
+			body, err := ioutil.ReadFile(filepath.Join(os.Getenv("HOME"), "data", "comments", fileInfo.Name(), "offset.txt"))
 			if err != nil {
 				log.Printf("No offset data for group %s\n", fileInfo.Name())
 				continue
 			}
 			offset, _ := strconv.Atoi(string(body))
 
-			body, err = ioutil.ReadFile(filepath.Join(".data", "comments", fileInfo.Name(), "count.txt"))
+			body, err = ioutil.ReadFile(filepath.Join(os.Getenv("HOME"), "data", "comments", fileInfo.Name(), "count.txt"))
 			if err != nil {
 				log.Printf("No count data for group %s\n", fileInfo.Name())
 				continue
@@ -394,7 +417,33 @@ func main() {
 	go handleInterrupt()
 
 	wg := &sync.WaitGroup{}
-	for _, groupID := range strings.Split(string(body), "\n") {
+
+	groups := strings.Split(string(body), "\n")
+	log.Printf("Loaded %d groups: %s\n", len(groups), groups)
+
+	screenNames := strings.Join(groups, ",")
+	resp, err := doVKAPIGenericRequest("groups.getById", url.Values{
+		"group_ids": {screenNames},
+	})
+	if err != nil {
+		panic(err)
+	}
+	var groupIDs []string
+	if rawResponse, ok := resp.Response.([]interface{}); ok {
+		for _, rawElement := range rawResponse {
+			if groupMap, ok := rawElement.(map[string]interface{}); ok {
+				id, ok := groupMap["id"].(float64)
+				if ok {
+					idStr := "-" + strconv.Itoa(int(id))
+					groupIDs = append(groupIDs, idStr)
+				} else {
+					log.Println(id, ok)
+				}
+			}
+		}
+	}
+
+	for _, groupID := range groupIDs {
 		wg.Add(1)
 		go parseGroup(groupID)
 	}
