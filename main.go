@@ -62,17 +62,18 @@ type VkProfile struct {
 }
 
 type VkCommentItem struct {
-	ID             int
-	FromID         int `json:"from_id"`
-	PostID         string
-	GroupID        string
-	PostURL        string
-	Date           int
-	Text           string
-	Likes          VkLikes
-	ReplyToUser    int `json:"reply_to_user"`
-	ReplyToComment int `json:"reply_to_comment"`
-	Profile        *VkProfile
+	ID              int
+	FromID          int `json:"from_id"`
+	PostID          string
+	GroupID         string
+	GroupScreenName string
+	PostURL         string
+	Date            int
+	Text            string
+	Likes           VkLikes
+	ReplyToUser     int `json:"reply_to_user"`
+	ReplyToComment  int `json:"reply_to_comment"`
+	Profile         *VkProfile
 }
 
 type VkCommentsResp struct {
@@ -280,7 +281,7 @@ func loadCounters() error {
 	return err
 }
 
-func parseGroup(groupID string) error {
+func parseGroup(groupID string, screenName string) error {
 	var err error
 	var filename string
 	var offset int
@@ -342,6 +343,7 @@ func parseGroup(groupID string) error {
 					comment.Profile = profilesMap[comment.FromID]
 					comment.PostID = item.PostID
 					comment.GroupID = item.GroupID
+					comment.GroupScreenName = screenName
 					absGroupID := strings.Split(item.GroupID, "-")
 					comment.PostURL = "https://vk.com/public" + absGroupID[1] + "?w=wall" + item.GroupID + "_" + item.PostID
 					filename := filepath.Join(os.Getenv("HOME"), "data", "comments", item.GroupID, item.PostID, strconv.Itoa(comment.ID)+".json")
@@ -434,14 +436,14 @@ func logStats() error {
 func main() {
 
 	if VK_API_ACCESS_TOKEN_USER == "" {
-		body, err := ioutil.ReadFile("access_token.txt")
+		body, err := ioutil.ReadFile(filepath.Join(os.Getenv("HOME"), "access_token.txt"))
 		if err != nil {
 			log.Fatalln("No AccessToken found in the environment.\nVisit https://oauth.vk.com/authorize?client_id=6359340&redirect_uri=https://oauth.vk.com/blank.html&response_type=token to get a token and put it into a file 'access_token.txt' or into a VK_API_ACCESS_TOKEN_USER environmental variable.\nExiting..")
 		}
 		VK_API_ACCESS_TOKEN_USER = string(body)
 	}
 
-	body, err := ioutil.ReadFile("groups.txt")
+	body, err := ioutil.ReadFile(filepath.Join(os.Getenv("HOME"), "groups.txt"))
 	if err != nil {
 		log.Fatalln("Groups.txt file not found. Exiting..")
 	}
@@ -476,10 +478,9 @@ func main() {
 		}
 	}
 
-	for _, groupID := range groupIDs {
+	for i, groupID := range groupIDs {
 		wg.Add(1)
-		go parseGroup(groupID)
+		go parseGroup(groupID, groups[i])
 	}
-	// go elastic.ElasticLoop()
 	wg.Wait()
 }
