@@ -2,3 +2,4 @@
 *.txt
 extract-vk-comments-go.exe
 extract-vk-comments-go
+.vscode/launch.json

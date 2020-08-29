@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 )
 
 var VK_API_ACCESS_TOKEN_USER string = os.Getenv("VK_API_ACCESS_TOKEN_USER")
+var DATA_DIR = filepath.Join("/mnt", "disks", "disk1", "data")
 
 type VkError struct {
 	ErrorCode int    `json:"error_code"`
@@ -112,8 +114,9 @@ type VkInnerResponse struct {
 }
 
 type VkResponse struct {
-	Response *VkInnerResponse
-	Error    *VkError
+	Response      *VkInnerResponse
+	Error         *VkError
+	ExecuteErrors []*VkError
 }
 
 type VkGenericResponse struct {
@@ -122,7 +125,7 @@ type VkGenericResponse struct {
 }
 
 var mutex *sync.Mutex = &sync.Mutex{}
-var limiter <-chan time.Time = time.Tick(333 * time.Millisecond)
+var limiter <-chan time.Time = time.Tick(666 * time.Millisecond)
 var wg sync.WaitGroup = sync.WaitGroup{}
 
 var PostsCounter uint64
@@ -146,7 +149,9 @@ func doGETRequest(uri string, query url.Values) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	if resp.StatusCode > 400 {
+		return nil, errors.New(resp.Status)
+	}
 	defer resp.Body.Close()
 	body, err = ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -216,17 +221,17 @@ func dumpCounters() error {
 	var filename string
 	var err error
 
-	filename = filepath.Join(os.Getenv("HOME"), "data", "PostsCounter.txt")
+	filename = filepath.Join(DATA_DIR, "PostsCounter.txt")
 	err = ioutil.WriteFile(filename, []byte(strconv.Itoa(int(PostsCounter))), os.ModePerm)
 	if err != nil {
 		return err
 	}
-	filename = filepath.Join(os.Getenv("HOME"), "data", "ProfilesCounter.txt")
+	filename = filepath.Join(DATA_DIR, "ProfilesCounter.txt")
 	err = ioutil.WriteFile(filename, []byte(strconv.Itoa(int(ProfilesCounter))), os.ModePerm)
 	if err != nil {
 		return err
 	}
-	filename = filepath.Join(os.Getenv("HOME"), "data", "CommentsCounter.txt")
+	filename = filepath.Join(DATA_DIR, "CommentsCounter.txt")
 	err = ioutil.WriteFile(filename, []byte(strconv.Itoa(int(CommentsCounter))), os.ModePerm)
 	if err != nil {
 		return err
@@ -236,12 +241,40 @@ func dumpCounters() error {
 
 func loadCounters() error {
 	var err error
+	filename := filepath.Join(DATA_DIR, "PostsCounter.txt")
+	body, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	cnt, _ := strconv.Atoi(string(body))
+	PostsCounter += uint64(cnt)
+
+	filename = filepath.Join(DATA_DIR, "ProfilesCounter.txt")
+	body, err = ioutil.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	cnt, _ = strconv.Atoi(string(body))
+	ProfilesCounter += uint64(cnt)
+
+	filename = filepath.Join(DATA_DIR, "CommentsCounter.txt")
+	body, err = ioutil.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	cnt, _ = strconv.Atoi(string(body))
+	CommentsCounter += uint64(cnt)
+	return err
+}
+
+func countFiles() error {
+	var err error
 
 	var groupsCount int
 	var postsCount int
 	var commentsCount int
 
-	groupsDirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "comments"))
+	groupsDirList, err := ioutil.ReadDir(filepath.Join(DATA_DIR, "comments"))
 	if err != nil {
 		return err
 	}
@@ -249,7 +282,7 @@ func loadCounters() error {
 	for _, groupFileInfo := range groupsDirList {
 		if groupFileInfo.IsDir() {
 			groupsCount++
-			postsDirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "comments", groupFileInfo.Name()))
+			postsDirList, err := ioutil.ReadDir(filepath.Join(DATA_DIR, "comments", groupFileInfo.Name()))
 			if err != nil {
 				return err
 			}
@@ -257,7 +290,7 @@ func loadCounters() error {
 			for _, postFileInfo := range postsDirList {
 				if postFileInfo.IsDir() {
 					postsCount++
-					commentsDirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "comments", groupFileInfo.Name(), postFileInfo.Name()))
+					commentsDirList, err := ioutil.ReadDir(filepath.Join(DATA_DIR, "comments", groupFileInfo.Name(), postFileInfo.Name()))
 					if err != nil {
 						return err
 					}
@@ -268,7 +301,7 @@ func loadCounters() error {
 		}
 	}
 
-	profilesDirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "profiles"))
+	profilesDirList, err := ioutil.ReadDir(filepath.Join(DATA_DIR, "profiles"))
 	if err != nil {
 		return err
 	}
@@ -285,7 +318,9 @@ func parseGroup(groupID string, screenName string) error {
 	var err error
 	var filename string
 	var offset int
-	filename = filepath.Join(os.Getenv("HOME"), "data", "comments", groupID, "offset.txt")
+	defer wg.Done()
+
+	filename = filepath.Join(DATA_DIR, "comments", groupID, "offset.txt")
 	body, err := ioutil.ReadFile(filename)
 	if err == nil {
 		offset, err = strconv.Atoi(string(body))
@@ -301,24 +336,29 @@ func parseGroup(groupID string, screenName string) error {
 			"req":    {"20"},
 		}
 		vkResponse, err := doVKAPISpecificRequest("execute.getComments", query)
-		if vkResponse.Error != nil {
-			log.Println(vkResponse.Error.ErrorMsg)
-			log.Println("Sleeping for 60 seconds to recover..")
-			time.Sleep(60 * time.Second)
-			continue
-		}
 		if err != nil {
 			log.Println(err)
-			log.Println("Sleeping for 60 seconds to recover..")
-			time.Sleep(60 * time.Second)
-			continue
+			break
+		}
+		if vkResponse.Error != nil {
+			log.Println(vkResponse.Error.ErrorMsg)
+			break
+		}
+		if vkResponse.ExecuteErrors != nil {
+			for _, executeErr := range vkResponse.ExecuteErrors {
+				if executeErr.ErrorCode != 7 {
+					log.Println(executeErr.ErrorMsg)
+					break
+				}
+			}
 		}
 		for _, post := range vkResponse.Response.Posts.Items {
 			if post.Comments.Count > 0 {
-				filename := filepath.Join(os.Getenv("HOME"), "data", "comments", groupID, strconv.Itoa(post.ID), "post.json")
+				filename := filepath.Join(DATA_DIR, "comments", groupID, strconv.Itoa(post.ID), "post.json")
 				err = dump(filename, post)
 				if err != nil {
-					panic(err)
+					log.Println(err)
+					break
 				}
 				atomic.AddUint64(&PostsCounter, 1)
 			}
@@ -346,10 +386,11 @@ func parseGroup(groupID string, screenName string) error {
 					comment.GroupScreenName = screenName
 					absGroupID := strings.Split(item.GroupID, "-")
 					comment.PostURL = "https://vk.com/public" + absGroupID[1] + "?w=wall" + item.GroupID + "_" + item.PostID
-					filename := filepath.Join(os.Getenv("HOME"), "data", "comments", item.GroupID, item.PostID, strconv.Itoa(comment.ID)+".json")
+					filename := filepath.Join(DATA_DIR, "comments", item.GroupID, item.PostID, strconv.Itoa(comment.ID)+".json")
 					err = dump(filename, comment)
 					if err != nil {
-						panic(err)
+						log.Println(err)
+						break
 					}
 					// id := comment.GroupID + "_" + comment.PostID + "_" + strconv.Itoa(comment.ID)
 					// elastic.Fs2DBQueue <- elastic.Fs2DBArgs{
@@ -361,10 +402,11 @@ func parseGroup(groupID string, screenName string) error {
 				}
 			}
 			for _, profile := range item.Comments.Profiles {
-				filename := filepath.Join(os.Getenv("HOME"), "data", "profiles", strconv.Itoa(profile.ID)+".json")
+				filename := filepath.Join(DATA_DIR, "profiles", strconv.Itoa(profile.ID)+".json")
 				err = dump(filename, profile)
 				if err != nil {
-					panic(err)
+					log.Println(err)
+					break
 				}
 				atomic.AddUint64(&ProfilesCounter, 1)
 			}
@@ -374,20 +416,21 @@ func parseGroup(groupID string, screenName string) error {
 			log.Printf("Finish. Parsed %d/%d posts", offset, vkResponse.Response.Posts.Count)
 			break
 		}
-		filename = filepath.Join(os.Getenv("HOME"), "data", "comments", groupID, "offset.txt")
+		filename = filepath.Join(DATA_DIR, "comments", groupID, "offset.txt")
 		err = ioutil.WriteFile(filename, []byte(strconv.Itoa(offset)), os.ModePerm)
 		if err != nil {
-			panic(err)
+			log.Println(err)
+			break
 		}
-		filename = filepath.Join(os.Getenv("HOME"), "data", "comments", groupID, "count.txt")
+		filename = filepath.Join(DATA_DIR, "comments", groupID, "count.txt")
 		err = ioutil.WriteFile(filename, []byte(strconv.Itoa(vkResponse.Response.Posts.Count)), os.ModePerm)
 		if err != nil {
-			panic(err)
+			log.Println(err)
+			break
 		}
 		log.Printf("Group %s. Next offset: %d\n", groupID, offset)
 		log.Printf("Total Posts: %d. Total Profiles %d. TotalComments %d", PostsCounter, ProfilesCounter, CommentsCounter)
 	}
-	wg.Done()
 	return err
 }
 
@@ -404,20 +447,20 @@ func handleInterrupt() {
 
 func logStats() error {
 	var err error
-	dirList, err := ioutil.ReadDir(filepath.Join(os.Getenv("HOME"), "data", "comments"))
+	dirList, err := ioutil.ReadDir(filepath.Join(DATA_DIR, "comments"))
 	if err != nil {
 		return err
 	}
 	for _, fileInfo := range dirList {
 		if fileInfo.IsDir() {
-			body, err := ioutil.ReadFile(filepath.Join(os.Getenv("HOME"), "data", "comments", fileInfo.Name(), "offset.txt"))
+			body, err := ioutil.ReadFile(filepath.Join(DATA_DIR, "comments", fileInfo.Name(), "offset.txt"))
 			if err != nil {
 				log.Printf("No offset data for group %s\n", fileInfo.Name())
 				continue
 			}
 			offset, _ := strconv.Atoi(string(body))
 
-			body, err = ioutil.ReadFile(filepath.Join(os.Getenv("HOME"), "data", "comments", fileInfo.Name(), "count.txt"))
+			body, err = ioutil.ReadFile(filepath.Join(DATA_DIR, "comments", fileInfo.Name(), "count.txt"))
 			if err != nil {
 				log.Printf("No count data for group %s\n", fileInfo.Name())
 				continue
@@ -426,7 +469,6 @@ func logStats() error {
 			log.Printf("Group %s : %d/%d : %.1f %%\n", fileInfo.Name(), offset, count, 100*float64(offset)/float64(count))
 		}
 	}
-	loadCounters()
 	log.Printf("Total Posts: %d\n", PostsCounter)
 	log.Printf("Total Profiles: %d\n", ProfilesCounter)
 	log.Printf("Total Comments: %d\n", CommentsCounter)
@@ -438,7 +480,7 @@ func main() {
 	if VK_API_ACCESS_TOKEN_USER == "" {
 		body, err := ioutil.ReadFile(filepath.Join(os.Getenv("HOME"), "access_token.txt"))
 		if err != nil {
-			log.Fatalln("No AccessToken found in the environment.\nVisit https://oauth.vk.com/authorize?client_id=6359340&redirect_uri=https://oauth.vk.com/blank.html&response_type=token to get a token and put it into a file 'access_token.txt' or into a VK_API_ACCESS_TOKEN_USER environmental variable.\nExiting..")
+			log.Fatalln("No AccessToken found in the environment.\nVisit https://oauth.vk.com/authorize?client_id=6359340&redirect_uri=https://oauth.vk.com/blank.html&response_type=token&scope=wall,offline to get a token and put it into a file 'access_token.txt' or into a VK_API_ACCESS_TOKEN_USER environmental variable.\nExiting..")
 		}
 		VK_API_ACCESS_TOKEN_USER = string(body)
 	}
@@ -448,8 +490,14 @@ func main() {
 		log.Fatalln("Groups.txt file not found. Exiting..")
 	}
 
-	logStats()
+	loadCounters()
+	defer dumpCounters()
 	go handleInterrupt()
+
+	err = logStats()
+	if err != nil {
+		panic(err)
+	}
 
 	wg := &sync.WaitGroup{}
 
@@ -477,10 +525,14 @@ func main() {
 			}
 		}
 	}
-
+	log.Println("Resolved groupIDs: ", groupIDs)
 	for i, groupID := range groupIDs {
 		wg.Add(1)
 		go parseGroup(groupID, groups[i])
 	}
 	wg.Wait()
+	err = dumpCounters()
+	if err != nil {
+		panic(err)
+	}
 }
