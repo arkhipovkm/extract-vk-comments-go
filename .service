@@ -1,0 +1,12 @@
+[Unit]
+Description=Extract VK Comments
+After=network.target
+
+[Service]
+Type=simple
+User=arkhipov_km
+WorkingDirectory=/home/arkhipov_km
+ExecStart=/home/arkhipov_km/go/bin/extract-vk-comments-go
+Restart=on-failure
+[Install]
+WantedBy=default.target
