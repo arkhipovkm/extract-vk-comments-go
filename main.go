@@ -145,7 +145,10 @@ func doGETRequest(uri string, query url.Values) ([]byte, error) {
 	mutex.Lock()
 	<-limiter
 	mutex.Unlock()
-	resp, err := http.Get(uri)
+	c := &http.Client{
+		Timeout: 15 * time.Second,
+	}
+	resp, err := c.Get(uri)
 	if err != nil {
 		return nil, err
 	}
@@ -318,6 +321,11 @@ func parseGroup(groupID string, screenName string) error {
 	var err error
 	var filename string
 	var offset int
+	// d := func() {
+	// 	recover()
+	// 	log.Println("Recovered. Returning from goroutine..")
+	// 	wg.Done()
+	// }
 	defer wg.Done()
 
 	filename = filepath.Join(DATA_DIR, "comments", groupID, "offset.txt")
@@ -338,17 +346,19 @@ func parseGroup(groupID string, screenName string) error {
 		vkResponse, err := doVKAPISpecificRequest("execute.getComments", query)
 		if err != nil {
 			log.Println(err)
-			break
+			offset += 10
+			continue
 		}
 		if vkResponse.Error != nil {
 			log.Println(vkResponse.Error.ErrorMsg)
-			break
+			continue
 		}
 		if vkResponse.ExecuteErrors != nil {
 			for _, executeErr := range vkResponse.ExecuteErrors {
-				if executeErr.ErrorCode != 7 {
+				if executeErr.ErrorCode == 29 {
 					log.Println(executeErr.ErrorMsg)
-					break
+					time.Sleep(360 * time.Second)
+					continue
 				}
 			}
 		}
@@ -357,8 +367,7 @@ func parseGroup(groupID string, screenName string) error {
 				filename := filepath.Join(DATA_DIR, "comments", groupID, strconv.Itoa(post.ID), "post.json")
 				err = dump(filename, post)
 				if err != nil {
-					log.Println(err)
-					break
+					panic(err)
 				}
 				atomic.AddUint64(&PostsCounter, 1)
 			}
@@ -389,15 +398,8 @@ func parseGroup(groupID string, screenName string) error {
 					filename := filepath.Join(DATA_DIR, "comments", item.GroupID, item.PostID, strconv.Itoa(comment.ID)+".json")
 					err = dump(filename, comment)
 					if err != nil {
-						log.Println(err)
-						break
+						panic(err)
 					}
-					// id := comment.GroupID + "_" + comment.PostID + "_" + strconv.Itoa(comment.ID)
-					// elastic.Fs2DBQueue <- elastic.Fs2DBArgs{
-					// 	ID:       id,
-					// 	Filename: filename,
-					// 	Index:    "comments-1",
-					// }
 					atomic.AddUint64(&CommentsCounter, 1)
 				}
 			}
@@ -405,8 +407,7 @@ func parseGroup(groupID string, screenName string) error {
 				filename := filepath.Join(DATA_DIR, "profiles", strconv.Itoa(profile.ID)+".json")
 				err = dump(filename, profile)
 				if err != nil {
-					log.Println(err)
-					break
+					panic(err)
 				}
 				atomic.AddUint64(&ProfilesCounter, 1)
 			}
@@ -498,8 +499,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
-	wg := &sync.WaitGroup{}
 
 	groups := strings.Split(string(body), "\n")
 	log.Printf("Loaded %d groups: %s\n", len(groups), groups)
