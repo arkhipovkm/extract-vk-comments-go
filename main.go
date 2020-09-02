@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,9 +18,6 @@ import (
 	"syscall"
 	"time"
 )
-
-var VK_API_ACCESS_TOKEN_USER string = os.Getenv("VK_API_ACCESS_TOKEN_USER")
-var DATA_DIR = filepath.Join("/mnt", "disks", "disk1", "data")
 
 type VkError struct {
 	ErrorCode int    `json:"error_code"`
@@ -116,7 +114,7 @@ type VkInnerResponse struct {
 type VkResponse struct {
 	Response      *VkInnerResponse
 	Error         *VkError
-	ExecuteErrors []*VkError
+	ExecuteErrors []*VkError `json:"execute_errors"`
 }
 
 type VkGenericResponse struct {
@@ -124,8 +122,11 @@ type VkGenericResponse struct {
 	Error    *VkError
 }
 
+var DATA_DIR string
+var ACCESS_TOKENS []string
+
 var mutex *sync.Mutex = &sync.Mutex{}
-var limiter <-chan time.Time = time.Tick(666 * time.Millisecond)
+var limiter <-chan time.Time = time.Tick(3 * time.Millisecond)
 var wg sync.WaitGroup = sync.WaitGroup{}
 
 var PostsCounter uint64
@@ -157,6 +158,10 @@ func doGETRequest(uri string, query url.Values) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	body, err = ioutil.ReadAll(resp.Body)
+
+	// debugBody := string(body)
+	// log.Println(debugBody)
+
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +172,9 @@ func doVKAPISpecificRequest(methodName string, query url.Values) (VkResponse, er
 	var vkResponse VkResponse
 	var err error
 
-	query.Add("access_token", VK_API_ACCESS_TOKEN_USER)
+	accessToken := ACCESS_TOKENS[rand.Intn(len(ACCESS_TOKENS))]
+
+	query.Add("access_token", accessToken)
 	query.Add("v", "5.122")
 
 	body, err := doGETRequest("https://api.vk.com/method/"+methodName, query)
@@ -185,7 +192,9 @@ func doVKAPIGenericRequest(methodName string, query url.Values) (VkGenericRespon
 	var vkResponse VkGenericResponse
 	var err error
 
-	query.Add("access_token", VK_API_ACCESS_TOKEN_USER)
+	accessToken := ACCESS_TOKENS[rand.Intn(len(ACCESS_TOKENS))]
+
+	query.Add("access_token", accessToken)
 	query.Add("v", "5.122")
 
 	body, err := doGETRequest("https://api.vk.com/method/"+methodName, query)
@@ -321,11 +330,6 @@ func parseGroup(groupID string, screenName string) error {
 	var err error
 	var filename string
 	var offset int
-	// d := func() {
-	// 	recover()
-	// 	log.Println("Recovered. Returning from goroutine..")
-	// 	wg.Done()
-	// }
 	defer wg.Done()
 
 	filename = filepath.Join(DATA_DIR, "comments", groupID, "offset.txt")
@@ -357,7 +361,6 @@ func parseGroup(groupID string, screenName string) error {
 			for _, executeErr := range vkResponse.ExecuteErrors {
 				if executeErr.ErrorCode == 29 {
 					log.Println(executeErr.ErrorMsg)
-					time.Sleep(360 * time.Second)
 					continue
 				}
 			}
@@ -476,17 +479,51 @@ func logStats() error {
 	return err
 }
 
+func shuffleStrings(a []string) []string {
+	rand.Seed(time.Now().UnixNano())
+	rand.Shuffle(len(a), func(i, j int) { a[i], a[j] = a[j], a[i] })
+	return a
+}
+
 func main() {
 
-	if VK_API_ACCESS_TOKEN_USER == "" {
-		body, err := ioutil.ReadFile(filepath.Join(os.Getenv("HOME"), "access_token.txt"))
-		if err != nil {
-			log.Fatalln("No AccessToken found in the environment.\nVisit https://oauth.vk.com/authorize?client_id=6359340&redirect_uri=https://oauth.vk.com/blank.html&response_type=token&scope=wall,offline to get a token and put it into a file 'access_token.txt' or into a VK_API_ACCESS_TOKEN_USER environmental variable.\nExiting..")
-		}
-		VK_API_ACCESS_TOKEN_USER = string(body)
+	dataPath := os.Args[1:]
+	DATA_DIR = filepath.Join(dataPath...)
+	log.Println(DATA_DIR)
+
+	body, err := ioutil.ReadFile(filepath.Join("access_tokens.txt"))
+	if err != nil {
+		log.Fatalln("No access_tokens.txt found. \nVisit https://oauth.vk.com/authorize?client_id=6359340&redirect_uri=https://oauth.vk.com/blank.html&response_type=token&scope=wall,offline to get a token and put it into a file 'access_tokens.txt'\nExiting..")
+	}
+	accessTokensURLs := strings.Split(string(body), "\n")
+	log.Printf("Loaded %d access token urls\n", len(accessTokensURLs))
+
+	if len(accessTokensURLs) == 0 {
+		log.Fatalln("No acces tokens in access_tokens.txt. Exiting..")
 	}
 
-	body, err := ioutil.ReadFile(filepath.Join(os.Getenv("HOME"), "groups.txt"))
+	accessTokensMap := make(map[string]string)
+	for _, rawURL := range accessTokensURLs {
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		q, err := url.ParseQuery(u.Fragment)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		accessTokensMap[q.Get("user_id")] = q.Get("access_token")
+	}
+
+	for _, v := range accessTokensMap {
+		ACCESS_TOKENS = append(ACCESS_TOKENS, v)
+	}
+
+	log.Println(ACCESS_TOKENS, len(ACCESS_TOKENS))
+
+	body, err = ioutil.ReadFile(filepath.Join("groups.txt"))
 	if err != nil {
 		log.Fatalln("Groups.txt file not found. Exiting..")
 	}
